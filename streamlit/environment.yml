@@ -1,0 +1,10 @@
+# Snowflake Streamlit in Snowflake (SiS) environment
+# Only list packages available in the Snowflake conda channel.
+# snowflake-snowpark-python is pre-installed in SiS — no need to list it.
+name: qa-allocation-tool
+channels:
+  - snowflake
+dependencies:
+  - streamlit=1.35.*
+  - pandas
+  - python=3.11.*
