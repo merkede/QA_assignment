@@ -3,7 +3,7 @@
 preview.py  —  Zero-dependency HTML preview for QA Allocation Tool.
 Uses only the Python standard library (no numpy, no pandas).
 """
-import argparse, json, random
+import argparse, csv, json, random
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -831,18 +831,87 @@ function dr(l,v){return'<span class="dk">'+l+'</span><span class="dv">'+(v!=null
 </body>
 </html>"""
 
+def _read_csv(path):
+    """Read a CSV file into a list of dicts, auto-casting numbers."""
+    rows = []
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            clean = {}
+            for k, v in row.items():
+                k = k.strip()
+                v = v.strip() if v else None
+                if v in (None, "", "NULL", "null", "None"):
+                    clean[k] = None
+                else:
+                    try:
+                        clean[k] = int(v)
+                    except ValueError:
+                        try:
+                            clean[k] = float(v)
+                        except ValueError:
+                            clean[k] = v
+            rows.append(clean)
+    return rows
+
+def _derive_colleagues(rows):
+    """Ensure derived fields exist on colleague rows."""
+    for r in rows:
+        req  = r.get("Number_of_checks_required") or 0
+        comp = r.get("COMPLETED") or 0
+        asgn = r.get("ASSIGNED") or (req - comp)
+        r.setdefault("ASSIGNED",    asgn)
+        r.setdefault("OUTSTANDING", asgn)
+        r["Completion_Pct"] = round(comp / req * 100, 1) if req else 0.0
+    return rows
+
+def load_from_csvs(data_dir):
+    """Load the three CSVs from data_dir. Filename matching is flexible."""
+    d = Path(data_dir)
+    # Find files by partial name match (case-insensitive)
+    def find(keyword):
+        matches = [f for f in d.iterdir()
+                   if f.suffix.lower() == ".csv" and keyword.lower() in f.stem.lower()]
+        if not matches:
+            raise FileNotFoundError(
+                f"No CSV containing '{keyword}' found in {d}.\n"
+                f"  Files present: {[f.name for f in d.glob('*.csv')]}"
+            )
+        return matches[0]
+
+    col_path  = find("assignment_base")
+    back_path = find("backlog")
+    pool_path = find("channel")  # QA_CONTACT_CHANNELS
+
+    print(f"  Colleagues CSV : {col_path.name}")
+    print(f"  Backlog CSV    : {back_path.name}")
+    print(f"  Pool CSV       : {pool_path.name}")
+
+    colleagues = _derive_colleagues(_read_csv(col_path))
+    backlog    = _read_csv(back_path)
+    pool       = _read_csv(pool_path)
+    return colleagues, backlog, pool
+
+
 def main():
-    parser=argparse.ArgumentParser()
-    parser.add_argument("--out",default=".",help="Output directory")
+    parser=argparse.ArgumentParser(
+        description="Generate QA Allocation Tool HTML dashboard.")
+    parser.add_argument("--out", default=".", help="Output directory (default: .)")
+    parser.add_argument("--data-dir", default=None,
+        help="Folder containing QA_ASSIGNMENT_BASE.csv, QA_COLLEAGUE_CALL_BACKLOG.csv, "
+             "QA_CONTACT_CHANNELS.csv. If omitted, synthetic demo data is used.")
     args=parser.parse_args()
     out_dir=Path(args.out);out_dir.mkdir(parents=True,exist_ok=True)
-    print("Generating data...")
-    colleagues=make_colleagues();backlog=make_backlog(colleagues);pool=make_pool(colleagues)
+    print("Loading data...")
+    if args.data_dir:
+        colleagues, backlog, pool = load_from_csvs(args.data_dir)
+    else:
+        print("  (no --data-dir supplied — using synthetic demo data)")
+        colleagues=make_colleagues();backlog=make_backlog(colleagues);pool=make_pool(colleagues)
     print(f"  Colleagues:{len(colleagues)}  Backlog:{len(backlog)}  Pool:{len(pool)}")
     html=HTML_TEMPLATE
-    html=html.replace("__COLLEAGUES__",json.dumps(colleagues))
-    html=html.replace("__BACKLOG__",json.dumps(backlog))
-    html=html.replace("__POOL__",json.dumps(pool))
+    html=html.replace("__COLLEAGUES__",json.dumps(colleagues,default=str))
+    html=html.replace("__BACKLOG__",json.dumps(backlog,default=str))
+    html=html.replace("__POOL__",json.dumps(pool,default=str))
     out_path=out_dir/"index.html";out_path.write_text(html,encoding="utf-8")
     print(f"Done -> {out_path.resolve()}")
 
