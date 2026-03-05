@@ -1,0 +1,850 @@
+#!/usr/bin/env python3
+"""
+preview.py  —  Zero-dependency HTML preview for QA Allocation Tool.
+Uses only the Python standard library (no numpy, no pandas).
+"""
+import argparse, json, random
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+TODAY = date(2026, 3, 5)
+TEAMS = {
+    "HD RTL K":{"tl":"Katy Brown",  "ccl":"Mark Evans", "site":"London"},
+    "HD RTL M":{"tl":"James Clarke","ccl":"Mark Evans", "site":"London"},
+    "HD RTL P":{"tl":"Sarah Mills", "ccl":"Lisa Webb",  "site":"Leeds"},
+    "HD RTL Q":{"tl":"David Jones", "ccl":"Lisa Webb",  "site":"Leeds"},
+    "HD RTL A":{"tl":"Emma Wilson", "ccl":"Paul Knight","site":"London"},
+}
+SKILLS=["HD RTL CUSTOMER","HD CLM CUSTOMER","HD RTL ESCALATIONS","CANCELLATION CS","NEW BUSINESS CS","RETENTION CS"]
+LOBS=["CAR","HOME","VAN","BIKE"]
+BRANDS=["HAS","ADV","PRE"]
+TRANSACTIONS=["MTA","NB","REN","CAN","ENQ","ESC"]
+NAMES=["Alice Thompson","Ben Carter","Clara Davis","Dan Evans","Eva Foster",
+       "Frank Green","Grace Hill","Harry Irving","Isla Jones","Jack King",
+       "Karen Lee","Liam Moore","Mia Norton","Noah Owen","Olivia Park",
+       "Peter Quinn","Quinn Reed","Rachel Scott","Sam Turner","Tara Underwood"]
+
+pick=random.choice
+def rnd(a,b): return random.randint(a,b)
+
+def make_colleagues():
+    random.seed(42); rows=[]; tkeys=list(TEAMS.keys())
+    for i,name in enumerate(NAMES):
+        t=tkeys[i%len(tkeys)]; td=TEAMS[t]
+        req=pick([2,3,4,5,6]); comp=rnd(0,req); out=req-comp
+        pct=round(comp/req*100,1) if req else 0
+        rows.append({"WkComDate":"2026-03-02","Year":2026,"Month":"2026-03-01",
+            "Colleague_Name":name,"Colleague_ID":200000+i*1337,
+            "Agent_EmployeeNumber":500000000+i*12345,"Working_Days":5,
+            "Number_of_checks_required":req,"Team_Leader":td["tl"],
+            "team_name":t,"CCL":td["ccl"],"Site":td["site"],
+            "ASSIGNED":out,"COMPLETED":comp,"OUTSTANDING":out,
+            "CONTACTS_LAST_7_DAYS":rnd(20,150),"CONTACTS_LAST_30_DAYS":rnd(80,400),
+            "LAST_CONTACT_DATE":(TODAY-timedelta(days=rnd(0,4))).isoformat(),"Completion_Pct":pct})
+    return rows
+
+def make_backlog(colleagues):
+    random.seed(42); rows=[]; cid=5_000_000_000
+    for col in colleagues:
+        for _ in range(col["ASSIGNED"]):
+            rows.append({"ID":len(rows)+1,"EMPLOYEE_ID":col["Agent_EmployeeNumber"],
+                "CALL_ID":cid+len(rows),"COLLEAGUE_NAME":col["Colleague_Name"],
+                "COLLEAGUE_ID":col["Colleague_ID"],"TEAM":col["team_name"],
+                "TEAM_LEADER":col["Team_Leader"],"CCL":col["CCL"],"SITE":col["Site"],
+                "ASSIGNED_DATE":(TODAY-timedelta(days=rnd(0,3))).isoformat(),
+                "PRIORITY":pick([1,1,1,2,2,3]),"STATUS":"ASSIGNED","MATCHED_DATE":None,
+                "NEXT_ASSIGNMENT_DUE":None,
+                "SKILL_NAME":pick(SKILLS),"TRANSACTION":rnd(1,3),
+                "VULNERABLE":pick([0,0,0,0,1]),"TRANSACTION_TYPE":pick(TRANSACTIONS),
+                "POLICY_NUMBER":rnd(100000,999999),"LINE_OF_BUSINESS":pick(LOBS),
+                "BRAND":pick(BRANDS),"CALL_AHT_MINUTE":rnd(3,45)})
+        for _ in range(col["COMPLETED"]):
+            rows.append({"ID":len(rows)+1,"EMPLOYEE_ID":col["Agent_EmployeeNumber"],
+                "CALL_ID":cid+len(rows),"COLLEAGUE_NAME":col["Colleague_Name"],
+                "COLLEAGUE_ID":col["Colleague_ID"],"TEAM":col["team_name"],
+                "TEAM_LEADER":col["Team_Leader"],"CCL":col["CCL"],"SITE":col["Site"],
+                "ASSIGNED_DATE":(TODAY-timedelta(days=rnd(7,30))).isoformat(),
+                "PRIORITY":pick([1,1,2,3]),"STATUS":"COMPLETED",
+                "MATCHED_DATE":(TODAY-timedelta(days=rnd(0,6))).isoformat(),
+                "NEXT_ASSIGNMENT_DUE":None,"SKILL_NAME":pick(SKILLS),"TRANSACTION":rnd(1,3),
+                "VULNERABLE":pick([0,0,0,0,1]),"TRANSACTION_TYPE":pick(TRANSACTIONS),
+                "POLICY_NUMBER":rnd(100000,999999),"LINE_OF_BUSINESS":pick(LOBS),
+                "BRAND":pick(BRANDS),"CALL_AHT_MINUTE":rnd(3,45)})
+    return rows
+
+def make_pool(colleagues,n=500):
+    random.seed(42); rows=[]; start=datetime(2026,1,1)
+    for i in range(n):
+        cs=start+timedelta(hours=rnd(0,24*60),minutes=rnd(0,59))
+        ce=cs+timedelta(minutes=rnd(3,45)); col=colleagues[i%len(colleagues)]
+        rows.append({"MASTER_CONTACT_ID":30_000_000+i,"CONTACT_ID":3_000_000+i,
+            "USER_EMPLOYEEID":col["Agent_EmployeeNumber"],"COLLEAGUE_NAME":col["Colleague_Name"],
+            "CALL_START":cs.isoformat(),"CALL_END":ce.isoformat(),
+            "CALL_AHT_MINUTE":(ce-cs).seconds//60,"SKILL_NAME":pick(SKILLS),
+            "TRANSACTION_TYPE":pick(TRANSACTIONS),"TEAM_LEADER":col["Team_Leader"],
+            "CCL":col["CCL"],"SITE":col["Site"],"TENURE":rnd(100,2000),
+            "VULNERABLE":pick([0,0,0,0,1]),"POLICY_NUMBER":rnd(100000,999999),
+            "BRAND":pick(BRANDS),"STATUS":"ACTIVE","LINE_OF_BUSINESS":pick(LOBS)})
+    return rows
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>QA Allocation Tool</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.datatables.net/1.13.7/css/dataTables.bootstrap5.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+<style>
+:root{
+  --p:#2563eb;--pd:#1d4ed8;--pl:#eff6ff;
+  --g:#16a34a;--gl:#f0fdf4;
+  --w:#d97706;--wl:#fffbeb;
+  --r:#dc2626;--rl:#fef2f2;
+  --s0:#f8fafc;--s1:#f1f5f9;--s2:#e2e8f0;--s3:#cbd5e1;
+  --s5:#64748b;--s6:#475569;--s7:#334155;--s8:#1e293b;--s9:#0f172a;
+}
+*,*::before,*::after{box-sizing:border-box;}
+body{font-family:'Inter',sans-serif;background:var(--s1);color:var(--s7);margin:0;font-size:12px;}
+
+/* TOP BAR */
+.topbar{background:var(--s9);color:#fff;padding:0 1.25rem;height:48px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:1030;box-shadow:0 1px 5px rgba(0,0,0,.4);}
+.tb-left{display:flex;align-items:center;gap:.5rem;}
+.tb-icon{width:28px;height:28px;border-radius:6px;background:var(--p);display:flex;align-items:center;justify-content:center;font-size:.78rem;}
+.tb-title{font-size:.88rem;font-weight:700;letter-spacing:-.02em;}
+.tb-env{background:rgba(37,99,235,.3);border:1px solid rgba(37,99,235,.5);color:#93c5fd;font-size:.58rem;font-weight:700;padding:.08rem .35rem;border-radius:3px;letter-spacing:.08em;}
+.tb-right{font-size:.65rem;color:#94a3b8;display:flex;align-items:center;gap:.3rem;}
+
+/* FILTER BAR */
+.fbar{background:#fff;border-bottom:2px solid var(--p);padding:.55rem 1.25rem;position:sticky;top:48px;z-index:1020;box-shadow:0 2px 8px rgba(37,99,235,.08);}
+.fbar-inner{display:flex;flex-wrap:wrap;align-items:flex-end;gap:.5rem;}
+.fbar-group{display:flex;flex-direction:column;}
+.flabel{font-size:.62rem;font-weight:800;color:var(--p);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem;display:block;}
+.fbar select{font-size:.75rem;border:1.5px solid var(--s3);border-radius:6px;height:30px;padding:.15rem .45rem;min-width:120px;background:#fff;color:var(--s8);font-weight:500;}
+.fbar select:focus{border-color:var(--p);outline:none;box-shadow:0 0 0 3px rgba(37,99,235,.15);}
+.fbar select:not([value=""]):not(:invalid){border-color:var(--p);background:var(--pl);}
+.fsum{font-size:.68rem;color:var(--s6);font-weight:600;}
+.active-filter-pill{display:inline-flex;align-items:center;gap:.25rem;background:var(--pl);border:1px solid rgba(37,99,235,.35);color:var(--p);font-size:.65rem;font-weight:700;padding:.12rem .5rem;border-radius:999px;cursor:pointer;}
+.active-filter-pill:hover{background:#dbeafe;}
+
+/* TOP DASHBOARD ROW: KPIs + Quota */
+.dash-row{display:grid;grid-template-columns:repeat(3,1fr) 1.35fr;gap:.5rem;padding:.6rem 1.25rem .4rem;}
+
+/* KPI CARDS — compact */
+.kcard{background:#fff;border-radius:8px;padding:.6rem .85rem;border:1px solid var(--s2);display:flex;align-items:center;gap:.65rem;transition:transform .12s,box-shadow .12s;}
+.kcard:hover{transform:translateY(-1px);box-shadow:0 3px 12px rgba(0,0,0,.07);}
+.kico{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:.8rem;flex-shrink:0;}
+.kico.b{background:#dbeafe;color:var(--p);}
+.kico.a{background:#fef3c7;color:#b45309;}
+.kico.g{background:#dcfce7;color:var(--g);}
+.kbody{flex:1;min-width:0;}
+.kval{font-size:1.45rem;font-weight:800;line-height:1;color:var(--s9);}
+.klbl{font-size:.58rem;font-weight:700;color:var(--s5);text-transform:uppercase;letter-spacing:.06em;margin-top:.1rem;white-space:nowrap;}
+.ksub{font-size:.62rem;color:var(--s5);margin-top:.15rem;}
+.kbar{height:3px;border-radius:2px;background:var(--s2);margin-top:.45rem;}
+.kbarf{height:100%;border-radius:2px;transition:width .5s ease;}
+
+/* QUOTA BOX */
+.qbox{background:#fff;border-radius:8px;padding:.6rem .85rem;border:1px solid var(--s2);}
+.qbox-title{font-size:.65rem;font-weight:700;color:var(--s9);display:flex;align-items:center;justify-content:space-between;margin-bottom:.45rem;}
+.qbox-target{font-size:.58rem;color:var(--s5);font-weight:600;}
+/* 2×2 quad tiles */
+.qgrid{display:grid;grid-template-columns:1fr 1fr;gap:.35rem;}
+.qtile{border-radius:6px;padding:.4rem .5rem;display:flex;flex-direction:column;align-items:flex-start;gap:.12rem;transition:transform .12s;}
+.qtile:hover{transform:translateY(-1px);}
+.qtile-name{font-size:.6rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;}
+.qtile-val{font-size:.88rem;font-weight:800;line-height:1;}
+.qtile-sub{font-size:.55rem;font-weight:600;opacity:.8;}
+.qtile-bar{width:100%;height:3px;border-radius:2px;background:rgba(255,255,255,.35);margin-top:.2rem;overflow:hidden;}
+.qtile-barf{height:100%;border-radius:2px;background:rgba(255,255,255,.85);transition:width .5s ease;}
+.qtile.qg{background:var(--g);color:#fff;border:1px solid #15803d;}
+.qtile.qa{background:var(--w);color:#fff;border:1px solid #b45309;}
+.qtile.qr{background:var(--r);color:#fff;border:1px solid #b91c1c;}
+
+/* SECTION */
+.sec{padding:.35rem 1.25rem .65rem;}
+.shead{display:flex;align-items:center;justify-content:space-between;margin-bottom:.4rem;}
+.stitle{font-size:.75rem;font-weight:700;color:var(--s9);display:flex;align-items:center;gap:.35rem;}
+.sico{width:20px;height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:.65rem;}
+.sico.b{background:#dbeafe;color:var(--p);}
+.sico.a{background:#fef3c7;color:#b45309;}
+.sico.g{background:#dcfce7;color:var(--g);}
+.chip{background:var(--s1);color:var(--s5);border:1px solid var(--s2);font-size:.58rem;font-weight:700;padding:.08rem .4rem;border-radius:999px;}
+
+/* TABLE CARD */
+.tcard{background:#fff;border-radius:8px;border:1px solid var(--s2);overflow:hidden;}
+.tinner{padding:.4rem .6rem .6rem;}
+
+/* DataTables */
+.dataTables_wrapper .dataTables_filter input,
+.dataTables_wrapper .dataTables_length select{border:1px solid var(--s2);border-radius:4px;font-size:.68rem;font-family:'Inter',sans-serif;padding:.12rem .3rem;}
+.dataTables_wrapper .dataTables_filter input:focus{border-color:var(--p);outline:none;box-shadow:0 0 0 2px rgba(37,99,235,.1);}
+.dataTables_wrapper .dataTables_info,.dataTables_wrapper .dataTables_paginate{font-size:.63rem;}
+.dataTables_wrapper .page-link{font-size:.63rem;padding:.18rem .4rem;}
+table.dataTable thead th{font-size:.6rem!important;font-weight:700!important;text-transform:uppercase;letter-spacing:.05em;color:var(--s5)!important;background:var(--s0)!important;border-bottom:1px solid var(--s2)!important;white-space:nowrap;padding:.38rem .55rem!important;}
+table.dataTable tbody td{font-size:.7rem;vertical-align:middle;padding:.3rem .55rem!important;border-color:var(--s1)!important;}
+table.dataTable tbody tr:hover td{background:var(--s0)!important;}
+table.dataTable.no-footer{border-bottom:none;}
+.dataTables_scrollHead table thead th{background:var(--s0)!important;}
+.dataTables_scrollBody{border-bottom:1px solid var(--s2)!important;}
+
+/* Clickable cells */
+.cf{cursor:pointer;color:var(--p);font-weight:500;}
+.cf:hover{text-decoration:underline;}
+
+/* INLINE PROGRESS */
+.pw{display:flex;align-items:center;gap:.35rem;min-width:95px;}
+.pb{flex:1;height:4px;background:var(--s2);border-radius:3px;overflow:hidden;}
+.pf{height:100%;border-radius:3px;}
+.pf.g{background:var(--g);}.pf.a{background:var(--w);}.pf.r{background:var(--r);}
+.pp{font-size:.63rem;font-weight:700;min-width:28px;text-align:right;}
+.pp.g{color:var(--g);}.pp.a{color:var(--w);}.pp.r{color:var(--r);}
+
+/* RAG */
+.rag{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:.25rem;}
+.rag.g{background:var(--g);}.rag.a{background:var(--w);}.rag.r{background:var(--r);}
+
+/* BADGES */
+.ba{font-size:.58rem;font-weight:700;padding:.12rem .4rem;border-radius:999px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;}
+.bc{font-size:.58rem;font-weight:700;padding:.12rem .4rem;border-radius:999px;background:#f0fdf4;color:#14532d;border:1px solid #bbf7d0;}
+.bp{font-size:.58rem;font-weight:800;padding:.12rem .35rem;border-radius:3px;}
+.p1{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;}
+.p2{background:#fffbeb;color:#92400e;border:1px solid #fde68a;}
+.p3{background:var(--s1);color:var(--s5);border:1px solid var(--s2);}
+.bv{font-size:.55rem;font-weight:700;padding:.08rem .3rem;border-radius:3px;background:#f5f3ff;color:#5b21b6;border:1px solid #ddd6fe;}
+.due-exp{color:var(--r);font-weight:800;font-size:.68rem;animation:pulse 1.5s ease-in-out infinite;}
+.due-warn{color:var(--w);font-weight:600;font-size:.68rem;}
+.due-ok{color:var(--g);font-size:.68rem;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.6;}}
+
+/* EXPIRY NOTIFICATION */
+.expiry-float{position:fixed;top:56px;right:1rem;z-index:1050;display:none;
+  background:var(--r);color:#fff;border-radius:8px;padding:.45rem .8rem;
+  font-size:.72rem;font-weight:700;box-shadow:0 4px 16px rgba(220,38,38,.4);
+  cursor:pointer;display:flex;align-items:center;gap:.4rem;animation:slideDown .25s ease;}
+.expiry-float.hidden{display:none!important;}
+@keyframes slideDown{from{opacity:0;transform:translateY(-8px);}to{opacity:1;transform:translateY(0);}}
+.expiry-badge{background:rgba(255,255,255,.25);border-radius:999px;padding:.05rem .35rem;font-size:.7rem;font-weight:800;}
+
+/* EXPORT */
+.bex{font-size:.63rem;font-weight:600;padding:.18rem .5rem;border-radius:4px;border:1px solid var(--s2);background:#fff;color:var(--s5);cursor:pointer;display:inline-flex;align-items:center;gap:.25rem;transition:all .12s;}
+.bex:hover{background:var(--s0);color:var(--s8);}
+
+/* FAB */
+.fab{position:fixed;bottom:1.25rem;right:1.25rem;background:var(--p);color:#fff;border:none;border-radius:10px;padding:.5rem 1rem;font-size:.78rem;font-weight:700;display:inline-flex;align-items:center;gap:.35rem;box-shadow:0 3px 14px rgba(37,99,235,.45);transition:all .18s;cursor:pointer;z-index:900;}
+.fab:hover{background:var(--pd);transform:translateY(-2px);box-shadow:0 5px 20px rgba(37,99,235,.5);}
+
+/* MODAL */
+.modal-content{border-radius:12px;border:none;box-shadow:0 18px 45px rgba(0,0,0,.18);}
+.modal-header{border-bottom:1px solid var(--s2);padding:.75rem 1.1rem;}
+.modal-footer{border-top:1px solid var(--s2);padding:.6rem 1.1rem;}
+.modal-title{font-weight:700;font-size:.82rem;display:flex;align-items:center;gap:.4rem;}
+
+/* CHAT */
+.chat-wrap{display:flex;flex-direction:column;height:400px;}
+.chat-msgs{flex:1;overflow-y:auto;padding:.65rem;display:flex;flex-direction:column;gap:.5rem;background:var(--s0);border-radius:7px;margin-bottom:.5rem;}
+.bot-row{display:flex;align-items:flex-end;gap:.4rem;}
+.bot-av{width:24px;height:24px;border-radius:50%;background:var(--p);display:flex;align-items:center;justify-content:center;font-size:.65rem;flex-shrink:0;}
+.bot-bub{background:#fff;border:1px solid var(--s2);border-radius:3px 10px 10px 10px;padding:.45rem .65rem;max-width:84%;font-size:.72rem;line-height:1.45;color:var(--s8);box-shadow:0 1px 3px rgba(0,0,0,.05);}
+.usr-row{display:flex;justify-content:flex-end;}
+.usr-bub{background:var(--p);color:#fff;border-radius:10px 3px 10px 10px;padding:.42rem .65rem;max-width:75%;font-size:.72rem;line-height:1.45;}
+.typing{display:flex;align-items:center;gap:3px;padding:.4rem .65rem;background:#fff;border:1px solid var(--s2);border-radius:3px 10px 10px 10px;width:fit-content;}
+.typing span{width:4px;height:4px;border-radius:50%;background:var(--s3);display:inline-block;animation:bounce 1.1s infinite;}
+.typing span:nth-child(2){animation-delay:.18s;}.typing span:nth-child(3){animation-delay:.36s;}
+@keyframes bounce{0%,60%,100%{transform:translateY(0);}30%{transform:translateY(-4px);}}
+.chat-input{min-height:40px;}
+.chat-select{width:100%;font-size:.73rem;border:1px solid var(--s2);border-radius:6px;padding:.35rem .45rem;margin-bottom:.35rem;}
+.chat-select:focus{border-color:var(--p);outline:none;box-shadow:0 0 0 2px rgba(37,99,235,.1);}
+.chat-btns{display:flex;flex-wrap:wrap;gap:.35rem;}
+.chat-btn{font-size:.7rem;font-weight:600;padding:.3rem .65rem;border-radius:6px;border:2px solid var(--s2);background:#fff;cursor:pointer;transition:all .12s;color:var(--s7);}
+.chat-btn:hover{border-color:var(--p);color:var(--p);background:var(--pl);}
+.chat-btn.primary{background:var(--p);color:#fff;border-color:var(--p);}
+.chat-btn.primary:hover{background:var(--pd);}
+.chat-btn.success{background:var(--g);color:#fff;border-color:var(--g);}
+.chat-btn.warn{background:#fff;color:var(--w);border-color:var(--w);}
+.chat-filters{display:grid;grid-template-columns:1fr 1fr;gap:.35rem;margin-bottom:.35rem;}
+.chat-filters select{font-size:.7rem;border:1px solid var(--s2);border-radius:4px;padding:.25rem .35rem;}
+.chat-filters label{font-size:.58rem;font-weight:700;color:var(--s5);text-transform:uppercase;letter-spacing:.05em;}
+.res-card{border-radius:8px;padding:.85rem;animation:slideUp .2s ease;}
+.res-ok{background:var(--gl);border:1px solid #bbf7d0;}
+.res-err{background:var(--rl);border:1px solid #fecaca;}
+.res-warn{background:var(--wl);border:1px solid #fde68a;}
+.res-title{font-weight:700;font-size:.75rem;margin-bottom:.4rem;display:flex;align-items:center;gap:.35rem;}
+.dgrid{display:grid;grid-template-columns:auto 1fr;gap:.2rem .55rem;font-size:.67rem;margin-top:.4rem;}
+.dk{font-weight:600;color:var(--s5);white-space:nowrap;}.dv{color:var(--s8);font-weight:500;}
+@keyframes slideUp{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:translateY(0);}}
+.toast-container{z-index:1100;}
+.page-end{height:3.5rem;}
+::-webkit-scrollbar{width:4px;height:4px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--s3);border-radius:3px;}
+@media(max-width:768px){.topbar,.fbar,.dash-row,.sec{padding-left:.75rem;padding-right:.75rem;}.dash-row{grid-template-columns:1fr 1fr;}.fab{bottom:.75rem;right:.75rem;}}
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<header class="topbar">
+  <div class="tb-left">
+    <div class="tb-icon"><i class="fa-solid fa-shield-check" style="color:#93c5fd"></i></div>
+    <span class="tb-title">QA Allocation Tool</span>
+    <span class="tb-env">LIVE</span>
+  </div>
+  <div class="tb-right"><i class="fa-regular fa-clock"></i>Refreshed: <span id="refreshTime"></span></div>
+</header>
+
+<!-- FILTER BAR -->
+<div class="fbar">
+  <div class="fbar-inner">
+    <div class="fbar-group"><span class="flabel">Month</span><select id="f-month" onchange="applyFilters()"><option value="">All Months</option></select></div>
+    <div class="fbar-group"><span class="flabel">CCL</span><select id="f-ccl" onchange="applyFilters()"><option value="">All CCLs</option></select></div>
+    <div class="fbar-group"><span class="flabel">Team Leader</span><select id="f-tl" onchange="applyFilters()"><option value="">All Team Leaders</option></select></div>
+    <div class="fbar-group"><span class="flabel">Colleague</span><select id="f-colleague" onchange="applyFilters()"><option value="">All Colleagues</option></select></div>
+    <div class="fbar-group"><span class="flabel">Site</span><select id="f-site" onchange="applyFilters()"><option value="">All Sites</option></select></div>
+    <div class="fbar-group"><span class="flabel" style="visibility:hidden">x</span>
+      <button style="height:30px;font-size:.7rem;padding:.15rem .6rem;border-radius:6px;border:1.5px solid var(--s3);background:#fff;color:var(--s6);cursor:pointer;font-weight:600;" onclick="clearFilters()">
+        <i class="fa-solid fa-xmark me-1"></i>Clear
+      </button>
+    </div>
+    <div class="ms-auto align-self-center d-flex align-items-center gap-2">
+      <div id="activePills" class="d-flex gap-1 flex-wrap"></div>
+      <span class="fsum" id="fsum"></span>
+    </div>
+  </div>
+</div>
+
+<!-- DASHBOARD ROW: 3 KPIs + Quota Box -->
+<div class="dash-row">
+  <!-- KPI 1 -->
+  <div class="kcard">
+    <div class="kico b"><i class="fa-solid fa-clipboard-list"></i></div>
+    <div class="kbody">
+      <div class="kval" id="kpi-req">-</div>
+      <div class="klbl">Required</div>
+      <div class="ksub" id="ksub-req"></div>
+      <div class="kbar"><div class="kbarf" id="kb-req" style="width:100%;background:#bfdbfe;"></div></div>
+    </div>
+  </div>
+  <!-- KPI 2 -->
+  <div class="kcard">
+    <div class="kico a"><i class="fa-solid fa-hourglass-half"></i></div>
+    <div class="kbody">
+      <div class="kval" id="kpi-asgn">-</div>
+      <div class="klbl">Assigned</div>
+      <div class="ksub" id="ksub-asgn"></div>
+      <div class="kbar"><div class="kbarf" id="kb-asgn" style="background:#fcd34d;"></div></div>
+    </div>
+  </div>
+  <!-- KPI 3 -->
+  <div class="kcard">
+    <div class="kico g"><i class="fa-solid fa-circle-check"></i></div>
+    <div class="kbody">
+      <div class="kval" id="kpi-comp">-</div>
+      <div class="klbl">Completed</div>
+      <div class="ksub" id="ksub-comp"></div>
+      <div class="kbar"><div class="kbarf" id="kb-comp" style="background:#86efac;"></div></div>
+    </div>
+  </div>
+  <!-- QUOTA BOX -->
+  <div class="qbox">
+    <div class="qbox-title">
+      <span><i class="fa-solid fa-chart-pie me-1" style="color:var(--p)"></i>Line of Business Coverage</span>
+      <span class="qbox-target">Target: 5%</span>
+    </div>
+    <div class="qgrid" id="quotaRows"></div>
+  </div>
+</div>
+
+<!-- COLLEAGUE SUMMARY -->
+<div class="sec">
+  <div class="shead">
+    <div class="stitle"><div class="sico b"><i class="fa-solid fa-users"></i></div>Colleague Summary<span class="chip" id="ch-col">0</span></div>
+    <button class="bex" onclick="xport('tbl-col','colleague_summary')"><i class="fa-solid fa-download"></i>Export</button>
+  </div>
+  <div class="tcard"><div class="tinner">
+    <table id="tbl-col" class="table table-hover w-100">
+      <thead><tr>
+        <th>Colleague</th><th>ID</th><th>Required</th><th>Completed</th>
+        <th>Outstanding</th><th>Completion %</th><th>7d Contacts</th><th>30d Contacts</th><th>Last Contact</th>
+      </tr></thead><tbody></tbody>
+    </table>
+  </div></div>
+</div>
+
+<!-- OUTSTANDING -->
+<div class="sec">
+  <div class="shead">
+    <div class="stitle"><div class="sico a"><i class="fa-solid fa-hourglass"></i></div>Outstanding Contact Details<span class="chip" id="ch-out">0</span></div>
+    <button class="bex" onclick="xport('tbl-out','outstanding_contacts')"><i class="fa-solid fa-download"></i>Export</button>
+  </div>
+  <div class="tcard"><div class="tinner">
+    <table id="tbl-out" class="table table-hover w-100">
+      <thead><tr>
+        <th>Call ID</th><th>Colleague</th><th>Skill</th><th>LoB</th>
+        <th>Brand</th><th>Transaction</th><th>Priority</th>
+        <th>Assigned</th><th>Due</th><th>AHT</th><th>Vuln</th><th>Status</th>
+      </tr></thead><tbody></tbody>
+    </table>
+  </div></div>
+</div>
+
+<!-- COMPLETED -->
+<div class="sec">
+  <div class="shead">
+    <div class="stitle"><div class="sico g"><i class="fa-solid fa-circle-check"></i></div>Completed Contact Details<span class="chip" id="ch-comp">0</span></div>
+    <button class="bex" onclick="xport('tbl-comp','completed_contacts')"><i class="fa-solid fa-download"></i>Export</button>
+  </div>
+  <div class="tcard"><div class="tinner">
+    <table id="tbl-comp" class="table table-hover w-100">
+      <thead><tr>
+        <th>Call ID</th><th>Colleague</th><th>Skill</th><th>LoB</th>
+        <th>Brand</th><th>Transaction</th><th>Priority</th>
+        <th>Assigned</th><th>Matched</th><th>AHT</th><th>Vuln</th><th>Status</th>
+      </tr></thead><tbody></tbody>
+    </table>
+  </div></div>
+</div>
+
+<div class="page-end"></div>
+
+<!-- EXPIRY NOTIFICATION -->
+<div class="expiry-float hidden" id="expiryFloat" onclick="scrollToOutstanding()">
+  <i class="fa-solid fa-triangle-exclamation"></i>
+  QA Check Due &mdash; Shortly Expiring
+  <span class="expiry-badge" id="expiryCount">0</span>
+</div>
+
+<button class="fab" onclick="openBot()"><i class="fa-solid fa-robot"></i>Request Contact</button>
+
+<!-- BOT MODAL -->
+<div class="modal fade" id="botModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered" style="max-width:440px;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">
+          <div class="tb-icon" style="width:24px;height:24px;border-radius:5px;font-size:.72rem;"><i class="fa-solid fa-robot" style="color:#fff"></i></div>
+          QA Assistant
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-footer" style="padding:.6rem 1.1rem;border-top:none;">
+        <div class="chat-wrap" style="width:100%;">
+          <div class="chat-msgs" id="chatMsgs"></div>
+          <div class="chat-input" id="chatInput"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+  <div id="mainToast" class="toast align-items-center border-0 text-white" role="alert">
+    <div class="d-flex"><div class="toast-body" id="toastBody"></div>
+    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>
+  </div>
+</div>
+
+<script>
+const DATA={colleagues:__COLLEAGUES__,backlog:__BACKLOG__,pool:__POOL__};
+const LOB_LIST=['CAR','HOME','VAN','BIKE'];
+const QUOTA_PCT=0.05;
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.7/js/dataTables.bootstrap5.min.js"></script>
+<script>
+let dtC,dtO,dtD,fC=[],fB=[];
+
+document.addEventListener('DOMContentLoaded',()=>{
+  document.getElementById('refreshTime').textContent=new Date().toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'short'});
+  populateFilters();initTables();applyFilters();populateSkills();
+});
+
+/* ── FILTERS ── */
+function populateFilters(){
+  const u=k=>[...new Set(DATA.colleagues.map(r=>r[k]).filter(Boolean))].sort();
+  fs('f-month',u('Month'));fs('f-ccl',u('CCL'));fs('f-tl',u('Team_Leader'));
+  fs('f-colleague',u('Colleague_Name'));fs('f-site',u('Site'));
+}
+function fs(id,vals){const s=document.getElementById(id);vals.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;s.appendChild(o);});}
+function gf(){return{month:document.getElementById('f-month').value,ccl:document.getElementById('f-ccl').value,tl:document.getElementById('f-tl').value,col:document.getElementById('f-colleague').value,site:document.getElementById('f-site').value};}
+
+function applyFilters(){
+  const f=gf();
+  fC=DATA.colleagues.filter(r=>(!f.month||r.Month===f.month)&&(!f.ccl||r.CCL===f.ccl)&&(!f.tl||r.Team_Leader===f.tl)&&(!f.col||r.Colleague_Name===f.col)&&(!f.site||r.Site===f.site));
+  const ids=new Set(fC.map(r=>r.Colleague_ID));
+  fB=DATA.backlog.filter(r=>ids.has(r.COLLEAGUE_ID));
+  updateKPIs();updateQuota();rebuildTables();updateFilterUI(f);updateExpiryBadge();
+}
+
+function clearFilters(){['f-month','f-ccl','f-tl','f-colleague','f-site'].forEach(id=>document.getElementById(id).value='');applyFilters();}
+
+function filterBy(field,val){
+  const map={'Colleague_Name':'f-colleague','Team_Leader':'f-tl','CCL':'f-ccl','Site':'f-site'};
+  if(!map[field])return;
+  document.getElementById(map[field]).value=val;
+  applyFilters();toast('Filtered: '+val,'success');
+}
+
+function updateFilterUI(f){
+  const n=Object.values(f).filter(Boolean).length;
+  document.getElementById('fsum').textContent=n?fC.length+' of '+DATA.colleagues.length+' colleagues':'';
+  const pills=document.getElementById('activePills');pills.innerHTML='';
+  Object.entries(f).forEach(([k,v])=>{
+    if(!v)return;
+    const lbl={'month':'Month','ccl':'CCL','tl':'Team Leader','col':'Colleague','site':'Site'}[k]||k;
+    const pill=document.createElement('span');pill.className='active-filter-pill';
+    pill.innerHTML=lbl+': <strong>'+v+'</strong> <i class="fa-solid fa-xmark ms-1" style="font-size:.55rem"></i>';
+    pill.onclick=()=>{document.getElementById('f-'+k).value='';applyFilters();};
+    pills.appendChild(pill);
+  });
+}
+
+/* ── KPIs ── */
+function updateKPIs(){
+  const sum=k=>fC.reduce((s,r)=>s+(Number(r[k])||0),0);
+  const req=sum('Number_of_checks_required'),comp=sum('COMPLETED'),asgn=sum('ASSIGNED');
+  document.getElementById('kpi-req').textContent=req;
+  document.getElementById('kpi-asgn').textContent=asgn;
+  document.getElementById('kpi-comp').textContent=comp;
+  const cp=req?Math.round(comp/req*100):0,ap=req?Math.round(asgn/req*100):0;
+  document.getElementById('ksub-req').textContent=fC.length+' colleague'+(fC.length!==1?'s':'');
+  document.getElementById('ksub-asgn').textContent=ap+'% of target';
+  document.getElementById('ksub-comp').textContent=cp+'% rate';
+  document.getElementById('kb-req').style.width='100%';
+  document.getElementById('kb-asgn').style.width=ap+'%';
+  document.getElementById('kb-comp').style.width=cp+'%';
+}
+
+/* ── QUOTA TRACKER ── */
+function updateQuota(){
+  const container=document.getElementById('quotaRows');
+  container.innerHTML='';
+  LOB_LIST.forEach(lob=>{
+    const totalCalls=DATA.pool.filter(r=>r.LINE_OF_BUSINESS===lob).length;
+    const target=Math.max(1,Math.ceil(totalCalls*QUOTA_PCT));
+    const achieved=fB.filter(r=>r.LINE_OF_BUSINESS===lob&&r.STATUS==='COMPLETED').length;
+    const pct=Math.min(100,Math.round(achieved/target*100));
+    const cls=pct>=80?'qg':pct>=50?'qa':'qr';
+    const tile=document.createElement('div');tile.className='qtile '+cls;
+    tile.innerHTML=
+      '<span class="qtile-name">'+lob+'</span>'+
+      '<span class="qtile-val">'+pct+'%</span>'+
+      '<span class="qtile-sub">'+achieved+' / '+target+' checks</span>'+
+      '<div class="qtile-bar"><div class="qtile-barf" style="width:'+pct+'%"></div></div>';
+    container.appendChild(tile);
+  });
+}
+
+/* ── TABLES ── */
+const DT_SCROLL={scrollY:'196px',scrollCollapse:true,paging:false,
+  dom:'<"row align-items-center mb-1"<"col ms-auto"f>>rt<"row mt-1"<"col"i>>',
+  language:{search:'',searchPlaceholder:'Search\u2026',info:'_TOTAL_ records'}};
+const DT_PAGE={pageLength:7,dom:'<"row align-items-center mb-1"<"col-auto"l><"col ms-auto"f>>rtip',
+  language:{search:'',searchPlaceholder:'Search\u2026',lengthMenu:'_MENU_'}};
+
+function initTables(){
+  dtC=$('#tbl-col').DataTable({...DT_SCROLL,order:[[5,'asc']]});
+  dtO=$('#tbl-out').DataTable({...DT_SCROLL,order:[[6,'asc'],[8,'asc']]});
+  dtD=$('#tbl-comp').DataTable({...DT_SCROLL,order:[[8,'desc']]});
+
+  // Click-to-filter: colleague name col 0 in summary table
+  $('#tbl-col tbody').on('click','td:first-child',function(){
+    const txt=$(this).text().trim();if(txt)filterBy('Colleague_Name',txt);
+  });
+  // Click colleague name (col 1) in contact tables
+  ['#tbl-out','#tbl-comp'].forEach(tid=>{
+    $(tid+' tbody').on('click','td:nth-child(2)',function(){
+      const txt=$(this).text().trim();if(txt)filterBy('Colleague_Name',txt);
+    });
+  });
+}
+
+function rebuildTables(){
+  dtC.clear();
+  fC.forEach(r=>{
+    const p=r.Completion_Pct||0,c=p>=80?'g':p>=50?'a':'r';
+    dtC.row.add([
+      '<span class="rag '+c+'"></span><span class="cf" title="Click to filter">'+r.Colleague_Name+'</span>',
+      r.Colleague_ID,r.Number_of_checks_required,r.COMPLETED,r.OUTSTANDING,
+      '<div class="pw"><div class="pb"><div class="pf '+c+'" style="width:'+p+'%"></div></div><span class="pp '+c+'">'+p+'%</span></div>',
+      r.CONTACTS_LAST_7_DAYS,r.CONTACTS_LAST_30_DAYS,fd(r.LAST_CONTACT_DATE)
+    ]);
+  });
+  dtC.draw();document.getElementById('ch-col').textContent=fC.length;
+
+  const out=fB.filter(r=>r.STATUS==='ASSIGNED');dtO.clear();
+  out.forEach(r=>{dtO.row.add([
+    '<code style="font-size:.65rem">'+r.CALL_ID+'</code>',
+    '<span class="cf" onclick="filterBy(\'Colleague_Name\',\''+r.COLLEAGUE_NAME+'\')">'+r.COLLEAGUE_NAME+'</span>',
+    r.SKILL_NAME,lob(r.LINE_OF_BUSINESS),r.BRAND,r.TRANSACTION_TYPE,
+    pb(r.PRIORITY),fd(r.ASSIGNED_DATE),due(r.ASSIGNED_DATE),
+    r.CALL_AHT_MINUTE+'m',r.VULNERABLE?'<span class="bv">V</span>':'-',
+    '<span class="ba">Assigned</span>'
+  ]);});
+  dtO.draw();document.getElementById('ch-out').textContent=out.length;
+
+  const comp=fB.filter(r=>r.STATUS==='COMPLETED');dtD.clear();
+  comp.forEach(r=>{dtD.row.add([
+    '<code style="font-size:.65rem">'+r.CALL_ID+'</code>',
+    '<span class="cf" onclick="filterBy(\'Colleague_Name\',\''+r.COLLEAGUE_NAME+'\')">'+r.COLLEAGUE_NAME+'</span>',
+    r.SKILL_NAME,lob(r.LINE_OF_BUSINESS),r.BRAND,r.TRANSACTION_TYPE,
+    pb(r.PRIORITY),fd(r.ASSIGNED_DATE),fd(r.MATCHED_DATE),
+    r.CALL_AHT_MINUTE+'m',r.VULNERABLE?'<span class="bv">V</span>':'-',
+    '<span class="bc">Completed</span>'
+  ]);});
+  dtD.draw();document.getElementById('ch-comp').textContent=comp.length;
+}
+
+/* ── HELPERS ── */
+function fd(s){if(!s||s==='null')return'-';try{return new Date(s).toLocaleDateString('en-GB');}catch(e){return s;}}
+function pb(p){const l={1:'P1',2:'P2',3:'P3'};return'<span class="bp p'+p+'">'+(l[p]||p)+'</span>';}
+function lob(v){const m={CAR:'#dbeafe;color:#1e40af',HOME:'#dcfce7;color:#15803d',VAN:'#fef3c7;color:#92400e',BIKE:'#f3e8ff;color:#6b21a8'};const s=m[v]||'var(--s1);color:var(--s5)';const[bg,fg]=s.split(';');return'<span style="font-size:.58rem;font-weight:700;padding:.1rem .3rem;border-radius:3px;background:'+bg+';'+fg+'">'+(v||'-')+'</span>';}
+// Due = ASSIGNED_DATE + 3 days. Never overdue (expiry kicks in and reassigns).
+function due(assignedDateStr){
+  if(!assignedDateStr||assignedDateStr==='null')return'-';
+  const t=new Date();t.setHours(0,0,0,0);
+  const a=new Date(assignedDateStr);a.setHours(0,0,0,0);
+  const dueDate=new Date(a.getTime()+3*86400000);
+  const diff=Math.round((dueDate-t)/86400000);
+  const l=fd(dueDate.toISOString().slice(0,10));
+  if(diff<=0)return'<span class="due-exp"><i class="fa-solid fa-fire me-1"></i>'+l+' (today)</span>';
+  if(diff===1)return'<span class="due-exp"><i class="fa-solid fa-clock me-1"></i>'+l+' (tomorrow)</span>';
+  if(diff<=2)return'<span class="due-warn"><i class="fa-solid fa-clock me-1"></i>'+l+' ('+diff+'d)</span>';
+  return'<span class="due-ok">'+l+' ('+diff+'d)</span>';
+}
+
+function updateExpiryBadge(){
+  const today=new Date();today.setHours(0,0,0,0);
+  const expiring=fB.filter(r=>{
+    if(r.STATUS!=='ASSIGNED'||!r.ASSIGNED_DATE)return false;
+    const a=new Date(r.ASSIGNED_DATE);a.setHours(0,0,0,0);
+    const dueDate=new Date(a.getTime()+3*86400000);
+    const diff=Math.round((dueDate-today)/86400000);
+    return diff<=1;
+  }).length;
+  const el=document.getElementById('expiryFloat');
+  const badge=document.getElementById('expiryCount');
+  if(expiring>0){
+    badge.textContent=expiring;
+    el.classList.remove('hidden');
+  } else {
+    el.classList.add('hidden');
+  }
+}
+
+function scrollToOutstanding(){
+  document.getElementById('tbl-out').closest('.sec').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+/* ── EXPORT ── */
+function xport(tid,fn){
+  const m={'tbl-col':dtC,'tbl-out':dtO,'tbl-comp':dtD};const dt=m[tid];if(!dt)return;
+  const rows=dt.rows({search:'applied'}).data().toArray();if(!rows.length){toast('No data','warning');return;}
+  const strip=s=>String(s).replace(/<[^>]*>/g,'').trim();
+  const csv=rows.map(r=>r.map(c=>'"'+strip(c).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);a.download=fn+'_'+new Date().toISOString().slice(0,10)+'.csv';a.click();toast('Downloaded','success');
+}
+function toast(msg,type){const el=document.getElementById('mainToast');const m={success:'bg-success',warning:'bg-warning text-dark',danger:'bg-danger'};el.className='toast align-items-center border-0 '+(m[type]||'bg-success')+' text-white';document.getElementById('toastBody').textContent=msg;bootstrap.Toast.getOrCreateInstance(el,{delay:2500}).show();}
+
+/* ══════════════════════════════════════
+   CONVERSATIONAL BOT
+══════════════════════════════════════ */
+let botModal,chatMsgs,chatInput;
+let botState={colleague:null,mode:null,lob:null,brand:null,skill:null};
+
+function populateSkills(){window._skills=[...new Set(DATA.pool.map(r=>r.SKILL_NAME).filter(Boolean))].sort();}
+
+function openBot(){
+  botState={colleague:null,mode:null,lob:null,brand:null,skill:null};
+  chatMsgs=document.getElementById('chatMsgs');chatInput=document.getElementById('chatInput');
+  chatMsgs.innerHTML='';chatInput.innerHTML='';
+  botModal=new bootstrap.Modal(document.getElementById('botModal'));botModal.show();
+  botSay("Hi! I can help assign a new QA contact. Who would you like to assign one to?",()=>showColInput());
+}
+
+let _tq=[],_busy=false;
+function botSay(text,cb){_tq.push({text,cb});if(!_busy)_runQ();}
+function _runQ(){
+  if(!_tq.length){_busy=false;return;}_busy=true;const item=_tq.shift();
+  const typEl=document.createElement('div');typEl.className='bot-row';
+  typEl.innerHTML='<div class="bot-av"><i class="fa-solid fa-robot" style="color:#fff;font-size:.6rem"></i></div><div class="typing"><span></span><span></span><span></span></div>';
+  chatMsgs.appendChild(typEl);chatMsgs.scrollTop=chatMsgs.scrollHeight;
+  const delay=Math.min(500+item.text.length*11,2000);
+  setTimeout(()=>{
+    typEl.remove();
+    const row=document.createElement('div');row.className='bot-row';
+    row.innerHTML='<div class="bot-av"><i class="fa-solid fa-robot" style="color:#fff;font-size:.6rem"></i></div><div class="bot-bub">'+item.text+'</div>';
+    chatMsgs.appendChild(row);chatMsgs.scrollTop=chatMsgs.scrollHeight;
+    if(item.cb)item.cb();setTimeout(_runQ,80);
+  },delay);
+}
+function userSay(text){const row=document.createElement('div');row.className='usr-row';row.innerHTML='<div class="usr-bub">'+text+'</div>';chatMsgs.appendChild(row);chatMsgs.scrollTop=chatMsgs.scrollHeight;}
+function clearInput(){chatInput.innerHTML='';}
+
+function showColInput(){
+  clearInput();
+  let html='<select class="chat-select" id="bot-col"><option value="">Select colleague...</option>';
+  fC.forEach(c=>{
+    const p=c.Completion_Pct||0;const e=p>=80?'🟢':p>=50?'🟡':'🔴';
+    html+='<option value="'+c.Colleague_ID+'">'+e+' '+c.Colleague_Name+' — '+c.OUTSTANDING+' outstanding ('+p+'%)</option>';
+  });
+  html+='</select><div class="chat-btns"><button class="chat-btn primary" onclick="botColSelected()"><i class="fa-solid fa-arrow-right me-1"></i>Continue</button></div>';
+  chatInput.innerHTML=html;
+}
+
+function botColSelected(){
+  const sel=document.getElementById('bot-col');if(!sel||!sel.value){toast('Select a colleague','warning');return;}
+  const col=DATA.colleagues.find(c=>String(c.Colleague_ID)===String(sel.value));if(!col)return;
+  botState.colleague=col;userSay(col.Colleague_Name);clearInput();
+  const p=col.Completion_Pct||0;
+  const clr=p>=80?'var(--g)':p>=50?'var(--w)':'var(--r)';
+  const lobBreakdown=LOB_LIST.map(l=>{
+    const done=fB.filter(r=>r.COLLEAGUE_ID===col.Colleague_ID&&r.STATUS==='COMPLETED'&&r.LINE_OF_BUSINESS===l).length;
+    return done>0?l+': '+done:'';
+  }).filter(Boolean).join(', ')||'none yet';
+  botSay('<strong>'+col.Colleague_Name+'</strong> — '+col.COMPLETED+'/'+col.Number_of_checks_required+' completed (<span style="color:'+clr+';font-weight:700">'+p+'%</span>). LoB breakdown: '+lobBreakdown+'.',
+    ()=>botSay("How would you like me to select a contact?",()=>showModeInput()));
+}
+
+function showModeInput(){
+  clearInput();
+  chatInput.innerHTML='<div class="chat-btns">'+
+    '<button class="chat-btn" onclick="botMode(\'random\')"><i class="fa-solid fa-shuffle me-1"></i>Random</button>'+
+    '<button class="chat-btn" onclick="botMode(\'pref\')"><i class="fa-solid fa-sliders me-1"></i>By preference</button>'+
+    '</div>';
+}
+
+function botMode(mode){
+  botState.mode=mode;userSay(mode==='random'?'Random contact':'I have a preference');clearInput();
+  if(mode==='random'){botSay("On it — picking a random contact from the pool...",()=>runAssign());}
+  else{botSay("Sure! Tell me what you need. Leave blank to match anything.",()=>showPrefInput());}
+}
+
+function showPrefInput(){
+  clearInput();
+  let lobOpts='<option value="">Any LoB</option>';LOBS.forEach(l=>lobOpts+='<option>'+l+'</option>');
+  let brandOpts='<option value="">Any brand</option>';BRANDS.forEach(b=>brandOpts+='<option>'+b+'</option>');
+  let skillOpts='<option value="">Any skill</option>';(window._skills||[]).forEach(s=>skillOpts+='<option>'+s+'</option>');
+  chatInput.innerHTML=
+    '<div class="chat-filters">'+
+      '<div><label class="flabel">Line of Business</label><select id="bot-lob">'+lobOpts+'</select></div>'+
+      '<div><label class="flabel">Brand</label><select id="bot-brand">'+brandOpts+'</select></div>'+
+    '</div>'+
+    '<label class="flabel">Skill</label><select id="bot-skill" class="chat-select">'+skillOpts+'</select>'+
+    '<div class="chat-btns">'+
+      '<button class="chat-btn primary" onclick="botPref()"><i class="fa-solid fa-magnifying-glass me-1"></i>Search</button>'+
+      '<button class="chat-btn" onclick="botMode(\'random\')">Just random</button>'+
+    '</div>';
+}
+
+function botPref(){
+  const lo=document.getElementById('bot-lob').value;
+  const br=document.getElementById('bot-brand').value;
+  const sk=document.getElementById('bot-skill').value;
+  botState.lob=lo;botState.brand=br;botState.skill=sk;
+  const parts=[];if(lo)parts.push(lo);if(br)parts.push(br);if(sk)parts.push(sk);
+  userSay(parts.length?parts.join(' + '):'Any');clearInput();
+  botSay("Searching"+(parts.length?' for '+parts.join(', '):'')+'...',()=>runAssign());
+}
+
+function runAssign(){
+  let pool=DATA.pool.filter(r=>r.STATUS==='ACTIVE');
+  const lo=botState.lob,br=botState.brand,sk=botState.skill;
+  if(botState.mode==='pref'){
+    if(lo)pool=pool.filter(r=>r.LINE_OF_BUSINESS===lo);
+    if(br)pool=pool.filter(r=>r.BRAND===br);
+    if(sk)pool=pool.filter(r=>r.SKILL_NAME===sk);
+  }
+  const col=botState.colleague;
+  if(pool.length){
+    const pick=pool[Math.floor(Math.random()*pool.length)];
+    const note=pool.length>1?' ('+pool.length+' matched)':'';
+    botSay('Done'+note+'! Assigned to <strong>'+col.Colleague_Name+'</strong>:',()=>{
+      showResult('<div class="res-card res-ok">'+
+        '<div class="res-title" style="color:#14532d"><i class="fa-solid fa-circle-check" style="color:var(--g)"></i>Contact Assigned</div>'+
+        '<div class="dgrid">'+dr('ID',pick.CONTACT_ID)+dr('Skill',pick.SKILL_NAME)+dr('LoB',pick.LINE_OF_BUSINESS)+dr('Brand',pick.BRAND)+dr('Txn',pick.TRANSACTION_TYPE)+dr('AHT',pick.CALL_AHT_MINUTE+'m')+dr('Vuln',pick.VULNERABLE?'Yes':'No')+'</div></div>');
+      toast('Contact '+pick.CONTACT_ID+' assigned','success');
+    });
+  } else {
+    // Smart fallback: find nearest match
+    const fallback=findFallback(lo,br,sk);
+    if(fallback){
+      botSay("No exact match found. But I found <strong>"+fallback.pool.length+"</strong> contacts if I relax the filters ("+fallback.label+").",()=>{
+        showResult('<div class="res-card res-warn">'+
+          '<div class="res-title" style="color:#92400e"><i class="fa-solid fa-triangle-exclamation" style="color:var(--w)"></i>Relaxed Match Found</div>'+
+          '<p style="font-size:.67rem;color:var(--s6);margin:.2rem 0 .45rem">'+fallback.pool.length+' contacts available with criteria: <strong>'+fallback.label+'</strong></p>'+
+          '<div class="chat-btns">'+
+            '<button class="chat-btn success" onclick="assignFrom('+JSON.stringify(fallback.pool.slice(0,50))+')" >Assign one of these</button>'+
+            '<button class="chat-btn warn" onclick="showPrefInput()">Try again</button>'+
+          '</div></div>');
+        toast('No exact match — alternative found','warning');
+      });
+    } else {
+      botSay("I've checked the full pool and there are no active contacts available. The pool may need refreshing.",()=>{
+        showResult('<div class="res-card res-err"><div class="res-title" style="color:#991b1b"><i class="fa-solid fa-circle-xmark" style="color:var(--r)"></i>No Contacts Available</div>'+
+          '<p style="font-size:.67rem;color:var(--s6);margin:.2rem 0 0">The contact pool appears empty. Please check with your data team.</p></div>');
+        toast('No contacts in pool','danger');
+      });
+    }
+  }
+}
+
+function findFallback(lo,br,sk){
+  const base=DATA.pool.filter(r=>r.STATUS==='ACTIVE');
+  const attempts=[
+    {pool:lo?base.filter(r=>r.LINE_OF_BUSINESS===lo):[], label:'LoB: '+lo},
+    {pool:br?base.filter(r=>r.BRAND===br):[], label:'Brand: '+br},
+    {pool:sk?base.filter(r=>r.SKILL_NAME===sk):[], label:'Skill: '+sk},
+    {pool:base, label:'any available'},
+  ];
+  for(const a of attempts){if(a.pool.length)return a;}
+  return null;
+}
+
+function assignFrom(poolSubset){
+  const pick=poolSubset[Math.floor(Math.random()*poolSubset.length)];
+  const col=botState.colleague;
+  chatInput.innerHTML='';
+  botSay('Assigned contact <strong>'+pick.CONTACT_ID+'</strong> to <strong>'+col.Colleague_Name+'</strong>.',()=>{
+    showResult('<div class="res-card res-ok">'+
+      '<div class="res-title" style="color:#14532d"><i class="fa-solid fa-circle-check" style="color:var(--g)"></i>Alternative Assigned</div>'+
+      '<div class="dgrid">'+dr('ID',pick.CONTACT_ID)+dr('Skill',pick.SKILL_NAME)+dr('LoB',pick.LINE_OF_BUSINESS)+dr('Brand',pick.BRAND)+dr('AHT',pick.CALL_AHT_MINUTE+'m')+'</div></div>');
+    toast('Alternative assigned','success');
+  });
+}
+
+function showResult(html){
+  clearInput();
+  const row=document.createElement('div');row.className='bot-row';
+  row.innerHTML='<div class="bot-av"><i class="fa-solid fa-robot" style="color:#fff;font-size:.6rem"></i></div><div style="max-width:87%">'+html+'</div>';
+  chatMsgs.appendChild(row);chatMsgs.scrollTop=chatMsgs.scrollHeight;
+  chatInput.innerHTML='<div class="chat-btns">'+
+    '<button class="chat-btn primary" onclick="botModal.hide()"><i class="fa-solid fa-check me-1"></i>Done</button>'+
+    '<button class="chat-btn" onclick="openBot()"><i class="fa-solid fa-rotate me-1"></i>Assign another</button>'+
+    '</div>';
+}
+
+function dr(l,v){return'<span class="dk">'+l+'</span><span class="dv">'+(v!=null?v:'-')+'</span>';}
+</script>
+</body>
+</html>"""
+
+def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--out",default=".",help="Output directory")
+    args=parser.parse_args()
+    out_dir=Path(args.out);out_dir.mkdir(parents=True,exist_ok=True)
+    print("Generating data...")
+    colleagues=make_colleagues();backlog=make_backlog(colleagues);pool=make_pool(colleagues)
+    print(f"  Colleagues:{len(colleagues)}  Backlog:{len(backlog)}  Pool:{len(pool)}")
+    html=HTML_TEMPLATE
+    html=html.replace("__COLLEAGUES__",json.dumps(colleagues))
+    html=html.replace("__BACKLOG__",json.dumps(backlog))
+    html=html.replace("__POOL__",json.dumps(pool))
+    out_path=out_dir/"index.html";out_path.write_text(html,encoding="utf-8")
+    print(f"Done -> {out_path.resolve()}")
+
+if __name__=="__main__":
+    main()
